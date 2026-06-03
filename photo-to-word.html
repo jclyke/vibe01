@@ -251,19 +251,29 @@ async function generate() {
   try {
     setStatus('Compressing images…', '');
     const images = [];
+    const skipped = [];
     for (let i = 0; i < files.length; i++) {
       progressEl.value = Math.round((i / files.length) * 60);
       setStatus(`Compressing image ${i + 1} of ${files.length}…`, '');
-      const { blob, w, h } = await compressImage(files[i], maxWidth, quality);
-      images.push({ name: files[i].name, blob, w, h });
+      try {
+        const { blob, w, h } = await compressImage(files[i], maxWidth, quality);
+        images.push({ name: files[i].name, blob, w, h });
+      } catch (e) {
+        const fname = e.message.startsWith('HEIC_SKIP:') ? e.message.slice(10) : files[i].name;
+        skipped.push(fname);
+        console.warn('Skipped:', fname, e.message);
+      }
     }
+    if (images.length === 0) throw new Error('No images could be processed.');
+    if (skipped.length) setStatus(`Note: ${skipped.length} file(s) skipped (too large to decode): ${skipped.join(', ')}`, 'error');
 
     setStatus('Building document…', '');
     progressEl.value = 70;
     const docxBlob = await buildDocx(images, columns, caption);
 
     progressEl.value = 100;
-    setStatus(`Done! Downloading document with ${files.length} photo(s).`, 'success');
+    const skipNote = skipped.length ? ` (${skipped.length} skipped)` : '';
+    setStatus(`Done! Document with ${images.length} photo(s)${skipNote} downloading…`, 'success');
     download(docxBlob, 'photos.docx');
   } catch (err) {
     setStatus('Error: ' + err.message, 'error');
@@ -279,12 +289,17 @@ async function compressImage(file, maxWidth, quality) {
   // Convert HEIC/HEIF to a standard blob first
   let sourceBlob = file;
   if (/\.(heic|heif)$/i.test(file.name)) {
+    // Try JPEG first; fall back to PNG if the internal canvas encode fails
     try {
       sourceBlob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 });
-      if (Array.isArray(sourceBlob)) sourceBlob = sourceBlob[0];
-    } catch (e) {
-      throw new Error('Could not decode HEIC file "' + file.name + '": ' + e.message);
+    } catch (_) {
+      try {
+        sourceBlob = await heic2any({ blob: file, toType: 'image/png' });
+      } catch (e2) {
+        throw new Error('HEIC_SKIP:' + file.name);
+      }
     }
+    if (Array.isArray(sourceBlob)) sourceBlob = sourceBlob[0];
   }
 
   return new Promise((resolve, reject) => {
