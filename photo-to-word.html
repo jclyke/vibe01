@@ -248,39 +248,50 @@ async function generate() {
   progressEl.classList.add('visible');
   progressEl.value = 0;
 
-  const quality  = parseInt(document.getElementById('quality').value) / 100;
-  const maxWidth = parseInt(document.getElementById('maxWidth').value) || 1200;
+  const quality     = parseInt(document.getElementById('quality').value) / 100;
+  const maxWidth    = parseInt(document.getElementById('maxWidth').value) || 1200;
   const picWidthPct = parseInt(document.getElementById('picWidth').value) || 100;
-  const columns  = Math.max(1, Math.floor(100 / picWidthPct));
-  const caption  = document.getElementById('caption').value || '[Caption here]';
-  const files    = sortFiles([...selectedFiles]);
+  const columns     = Math.max(1, Math.floor(100 / picWidthPct));
+  const caption     = document.getElementById('caption').value || '[Caption here]';
+  const files       = sortFiles([...selectedFiles]);
 
   try {
+    // ── Pass 1: compress each image and feed it directly into the ZIP ──────
+    // We never hold more than one decoded image in RAM at a time.
     setStatus('Compressing images…', '');
-    const images = [];
+    const zip     = new ZipWriter();
+    const meta    = [];   // { name, w, h } only — no pixel data
     const skipped = [];
+
     for (let i = 0; i < files.length; i++) {
-      progressEl.value = Math.round((i / files.length) * 60);
+      progressEl.value = Math.round((i / files.length) * 85);
       setStatus(`Compressing image ${i + 1} of ${files.length}…`, '');
       try {
-        const { blob, w, h } = await compressImage(files[i], maxWidth, quality);
-        images.push({ name: files[i].name, blob, w, h });
+        const { bytes, w, h } = await compressToBytes(files[i], maxWidth, quality);
+        meta.push({ name: files[i].name, w, h });
+        zip.add(`word/media/image${meta.length}.jpg`, bytes);
       } catch (e) {
         const fname = e.message.startsWith('HEIC_SKIP:') ? e.message.slice(10) : files[i].name;
         skipped.push(fname);
         console.warn('Skipped:', fname, e.message);
       }
+      // Yield to the browser so GC can reclaim the canvas / heic blobs
+      await new Promise(r => setTimeout(r, 0));
     }
-    if (images.length === 0) throw new Error('No images could be processed.');
-    if (skipped.length) setStatus(`Note: ${skipped.length} file(s) skipped (too large to decode): ${skipped.join(', ')}`, 'error');
 
+    if (meta.length === 0) throw new Error('No images could be processed.');
+    if (skipped.length) setStatus(`Note: ${skipped.length} file(s) skipped: ${skipped.join(', ')}`, 'error');
+
+    // ── Pass 2: add XML files to the already-populated ZIP ────────────────
     setStatus('Building document…', '');
-    progressEl.value = 70;
-    const docxBlob = await buildDocx(images, columns, caption, picWidthPct);
+    progressEl.value = 90;
+    addDocxXml(zip, meta, columns, caption, picWidthPct);
 
     progressEl.value = 100;
+    const docxBlob = new Blob([zip.finalize()],
+      { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
     const skipNote = skipped.length ? ` (${skipped.length} skipped)` : '';
-    setStatus(`Done! Document with ${images.length} photo(s)${skipNote} downloading…`, 'success');
+    setStatus(`Done! Document with ${meta.length} photo(s)${skipNote} downloading…`, 'success');
     download(docxBlob, 'photos.docx');
   } catch (err) {
     setStatus('Error: ' + err.message, 'error');
@@ -291,18 +302,17 @@ async function generate() {
   }
 }
 
-// ─── Image compression via Canvas ────────────────────────────────────────────
-async function compressImage(file, maxWidth, quality) {
-  // Convert HEIC/HEIF to a standard blob first
+// ─── Image compression via Canvas → Uint8Array ───────────────────────────────
+// Returns { bytes: Uint8Array, w, h } and releases all intermediates.
+async function compressToBytes(file, maxWidth, quality) {
   let sourceBlob = file;
   if (/\.(heic|heif)$/i.test(file.name)) {
-    // Try JPEG first; fall back to PNG if the internal canvas encode fails
     try {
       sourceBlob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 });
     } catch (_) {
       try {
         sourceBlob = await heic2any({ blob: file, toType: 'image/png' });
-      } catch (e2) {
+      } catch (_2) {
         throw new Error('HEIC_SKIP:' + file.name);
       }
     }
@@ -314,14 +324,21 @@ async function compressImage(file, maxWidth, quality) {
     const url = URL.createObjectURL(sourceBlob);
     img.onload = () => {
       URL.revokeObjectURL(url);
+      sourceBlob = null; // release heic2any output blob
       let w = img.naturalWidth, h = img.naturalHeight;
       if (w > maxWidth) { h = Math.round(h * maxWidth / w); w = maxWidth; }
       const canvas = document.createElement('canvas');
       canvas.width = w; canvas.height = h;
-      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
       canvas.toBlob(blob => {
         if (!blob) { reject(new Error('Canvas toBlob failed for ' + file.name)); return; }
-        resolve({ blob, w, h });
+        blob.arrayBuffer().then(ab => {
+          const bytes = new Uint8Array(ab);
+          // Explicitly clear canvas to free GPU/CPU memory
+          canvas.width = 1; canvas.height = 1;
+          resolve({ bytes, w, h });
+        }).catch(reject);
       }, 'image/jpeg', quality);
     };
     img.onerror = () => reject(new Error('Failed to load ' + file.name));
@@ -329,31 +346,14 @@ async function compressImage(file, maxWidth, quality) {
   });
 }
 
-// ─── DOCX builder ────────────────────────────────────────────────────────────
-async function buildDocx(images, columns, captionText, picWidthPct) {
-  // Page width: Letter 8.5" - 1" margins each side = 6.5" = 5943600 EMU
+// ─── DOCX XML builder (images are already in the ZIP) ────────────────────────
+function addDocxXml(zip, images, columns, captionText, picWidthPct) {
   const PAGE_WIDTH_EMU = 5943600;
-  const GAP_EMU        = 228600; // 0.25" gap between columns
-  // Picture width is driven by the slider percentage, not just page / columns
   const colWidth       = Math.floor(PAGE_WIDTH_EMU * picWidthPct / 100);
-
-  const relationships = [];
-  const mediaFiles    = [];
-
-  // Load each image blob as ArrayBuffer
-  for (let i = 0; i < images.length; i++) {
-    const ab = await images[i].blob.arrayBuffer();
-    mediaFiles.push({ name: `image${i + 1}.jpg`, data: new Uint8Array(ab) });
-    relationships.push({
-      id:     `rId${i + 1}`,
-      target: `media/image${i + 1}.jpg`,
-    });
-  }
 
   // Build document body paragraphs
   let bodyXml = '';
 
-  // Lay out rows of `columns` images
   for (let row = 0; row < images.length; row += columns) {
     const rowImages = images.slice(row, row + columns);
 
@@ -440,10 +440,7 @@ async function buildDocx(images, columns, captionText, picWidthPct) {
       <w:r><w:rPr><w:i/><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:t>${escXml(text)}</w:t></w:r></w:p>`;
   }
 
-  // ── Assemble ZIP ──────────────────────────────────────────────────────────
-  const zip = new ZipWriter();
-
-  // [Content_Types].xml
+  // ── Add XML entries to the ZIP (images are already in it) ────────────────
   let imageContentTypes = '';
   for (let i = 0; i < images.length; i++) {
     imageContentTypes += `<Override PartName="/word/media/image${i+1}.jpg" ContentType="image/jpeg"/>`;
@@ -456,39 +453,27 @@ async function buildDocx(images, columns, captionText, picWidthPct) {
   ${imageContentTypes}
 </Types>`));
 
-  // _rels/.rels
   zip.add('_rels/.rels', str2u8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`));
 
-  // word/_rels/document.xml.rels
-  let relEntries = relationships.map(r =>
-    `<Relationship Id="${r.id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${r.target}"/>`
+  const relEntries = images.map((_, i) =>
+    `<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${i+1}.jpg"/>`
   ).join('\n  ');
   zip.add('word/_rels/document.xml.rels', str2u8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   ${relEntries}
 </Relationships>`));
 
-  // word/document.xml
   zip.add('word/document.xml', str2u8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
   xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-  xmlns:o="urn:schemas-microsoft-com:office:office"
   xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-  xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
-  xmlns:v="urn:schemas-microsoft-com:vml"
-  xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
   xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
-  xmlns:w10="urn:schemas-microsoft-com:office:word"
   xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
   xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
-  xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
-  xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk"
-  xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"
-  xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
-  mc:Ignorable="w14 wp14">
+  mc:Ignorable="w14">
   <w:body>
     <w:sectPr>
       <w:pgSz w:w="12240" w:h="15840"/>
@@ -497,13 +482,6 @@ async function buildDocx(images, columns, captionText, picWidthPct) {
     ${bodyXml}
   </w:body>
 </w:document>`));
-
-  // word/media/image*.jpg
-  for (const mf of mediaFiles) {
-    zip.add(`word/media/${mf.name}`, mf.data);
-  }
-
-  return new Blob([zip.finalize()], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
