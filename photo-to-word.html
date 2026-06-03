@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Photos to Word Doc</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: Segoe UI, Arial, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px;
+  }
+  h1 { font-size: 1.8rem; margin-bottom: 8px; color: #a78bfa; }
+  .subtitle { color: #9ca3af; margin-bottom: 32px; font-size: 0.95rem; }
+  .card {
+    background: #16213e;
+    border: 1px solid #2d2d5e;
+    border-radius: 12px;
+    padding: 32px;
+    width: 100%;
+    max-width: 580px;
+  }
+  .drop-zone {
+    border: 2px dashed #4c4caf;
+    border-radius: 8px;
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    margin-bottom: 24px;
+  }
+  .drop-zone:hover, .drop-zone.dragover { border-color: #a78bfa; background: #1e1e4a; }
+  .drop-zone svg { margin-bottom: 12px; opacity: 0.6; }
+  .drop-zone p { color: #9ca3af; font-size: 0.9rem; }
+  .drop-zone strong { color: #c4b5fd; }
+  #folderInput { display: none; }
+
+  .options { display: grid; gap: 16px; margin-bottom: 24px; }
+  label.opt { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: #9ca3af; }
+  label.opt span { color: #c4b5fd; font-weight: 600; }
+  input[type=range] { width: 100%; accent-color: #a78bfa; }
+  input[type=number], input[type=text] {
+    background: #0f0f23;
+    border: 1px solid #2d2d5e;
+    border-radius: 6px;
+    color: #e0e0e0;
+    padding: 6px 10px;
+    font-size: 0.9rem;
+    width: 100%;
+  }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+  #generateBtn {
+    width: 100%;
+    padding: 12px;
+    background: #7c3aed;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background 0.2s;
+    font-weight: 600;
+  }
+  #generateBtn:hover:not(:disabled) { background: #6d28d9; }
+  #generateBtn:disabled { background: #3b3b6b; color: #6b6b9b; cursor: not-allowed; }
+
+  #status {
+    margin-top: 20px;
+    font-size: 0.85rem;
+    color: #9ca3af;
+    min-height: 20px;
+  }
+  #status.error { color: #f87171; }
+  #status.success { color: #34d399; }
+
+  #preview {
+    margin-top: 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .thumb {
+    width: 72px;
+    height: 72px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid #2d2d5e;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .thumb.loaded { opacity: 1; }
+
+  progress {
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    margin-top: 12px;
+    display: none;
+    accent-color: #a78bfa;
+  }
+  progress.visible { display: block; }
+</style>
+</head>
+<body>
+
+<h1>Photos → Word Document</h1>
+<p class="subtitle">Offline &nbsp;·&nbsp; No external dependencies &nbsp;·&nbsp; Drop a folder, get a .docx</p>
+
+<div class="card">
+  <div class="drop-zone" id="dropZone">
+    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="#a78bfa" stroke-width="1.5">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+    </svg>
+    <p><strong>Click to select a folder</strong> or drag &amp; drop photos here</p>
+    <p style="margin-top:6px">Supports JPG, PNG, GIF, WEBP, BMP</p>
+    <input type="file" id="folderInput" accept="image/*" multiple webkitdirectory>
+  </div>
+
+  <div class="options">
+    <div class="row">
+      <label class="opt">
+        <span>Image quality <span id="qualityVal">80</span>%</span>
+        <input type="range" id="quality" min="10" max="100" value="80"
+               oninput="document.getElementById('qualityVal').textContent=this.value">
+      </label>
+      <label class="opt">
+        <span>Max width (px)</span>
+        <input type="number" id="maxWidth" value="1200" min="200" max="4000" step="100">
+      </label>
+    </div>
+    <div class="row">
+      <label class="opt">
+        <span>Columns per row</span>
+        <input type="number" id="columns" value="1" min="1" max="4">
+      </label>
+      <label class="opt">
+        <span>Caption placeholder</span>
+        <input type="text" id="caption" value="[Caption here]">
+      </label>
+    </div>
+    <label class="opt">
+      <span>Sort order</span>
+      <select id="sortOrder" style="background:#0f0f23;border:1px solid #2d2d5e;border-radius:6px;color:#e0e0e0;padding:6px 10px;font-size:0.9rem;">
+        <option value="name">Filename A→Z</option>
+        <option value="name-desc">Filename Z→A</option>
+        <option value="date">Date modified (oldest first)</option>
+        <option value="date-desc">Date modified (newest first)</option>
+      </select>
+    </label>
+  </div>
+
+  <button id="generateBtn" disabled>Select photos first</button>
+  <progress id="progress" max="100" value="0"></progress>
+  <div id="status"></div>
+  <div id="preview"></div>
+</div>
+
+<script>
+// ─── State ───────────────────────────────────────────────────────────────────
+let selectedFiles = [];
+
+// ─── UI wiring ───────────────────────────────────────────────────────────────
+const dropZone   = document.getElementById('dropZone');
+const folderInput= document.getElementById('folderInput');
+const generateBtn= document.getElementById('generateBtn');
+const statusEl   = document.getElementById('status');
+const progressEl = document.getElementById('progress');
+const previewEl  = document.getElementById('preview');
+
+dropZone.addEventListener('click', () => folderInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  handleFiles([...e.dataTransfer.files]);
+});
+folderInput.addEventListener('change', () => handleFiles([...folderInput.files]));
+generateBtn.addEventListener('click', generate);
+
+function handleFiles(files) {
+  const imageTypes = /\.(jpe?g|png|gif|webp|bmp)$/i;
+  selectedFiles = files.filter(f => imageTypes.test(f.name));
+  if (!selectedFiles.length) {
+    setStatus('No supported image files found.', 'error');
+    return;
+  }
+  setStatus(`${selectedFiles.length} image(s) ready.`, '');
+  generateBtn.disabled = false;
+  generateBtn.textContent = `Generate Word Document (${selectedFiles.length} photos)`;
+  renderPreviews();
+}
+
+function renderPreviews() {
+  previewEl.innerHTML = '';
+  const sorted = sortFiles([...selectedFiles]);
+  sorted.slice(0, 24).forEach(f => {
+    const img = document.createElement('img');
+    img.className = 'thumb';
+    img.onload = () => { img.classList.add('loaded'); URL.revokeObjectURL(img.src); };
+    img.src = URL.createObjectURL(f);
+    previewEl.appendChild(img);
+  });
+  if (sorted.length > 24) {
+    const more = document.createElement('div');
+    more.style.cssText = 'display:flex;align-items:center;color:#9ca3af;font-size:0.8rem;';
+    more.textContent = `+${sorted.length - 24} more`;
+    previewEl.appendChild(more);
+  }
+}
+
+function setStatus(msg, type) {
+  statusEl.textContent = msg;
+  statusEl.className = type || '';
+}
+
+function sortFiles(files) {
+  const order = document.getElementById('sortOrder').value;
+  return files.sort((a, b) => {
+    if (order === 'name')      return a.name.localeCompare(b.name);
+    if (order === 'name-desc') return b.name.localeCompare(a.name);
+    if (order === 'date')      return a.lastModified - b.lastModified;
+    if (order === 'date-desc') return b.lastModified - a.lastModified;
+    return 0;
+  });
+}
+
+// ─── Main generate function ───────────────────────────────────────────────────
+async function generate() {
+  generateBtn.disabled = true;
+  progressEl.classList.add('visible');
+  progressEl.value = 0;
+
+  const quality  = parseInt(document.getElementById('quality').value) / 100;
+  const maxWidth = parseInt(document.getElementById('maxWidth').value) || 1200;
+  const columns  = Math.max(1, Math.min(4, parseInt(document.getElementById('columns').value) || 1));
+  const caption  = document.getElementById('caption').value || '[Caption here]';
+  const files    = sortFiles([...selectedFiles]);
+
+  try {
+    setStatus('Compressing images…', '');
+    const images = [];
+    for (let i = 0; i < files.length; i++) {
+      progressEl.value = Math.round((i / files.length) * 60);
+      setStatus(`Compressing image ${i + 1} of ${files.length}…`, '');
+      const { blob, w, h } = await compressImage(files[i], maxWidth, quality);
+      images.push({ name: files[i].name, blob, w, h });
+    }
+
+    setStatus('Building document…', '');
+    progressEl.value = 70;
+    const docxBlob = await buildDocx(images, columns, caption);
+
+    progressEl.value = 100;
+    setStatus(`Done! Downloading document with ${files.length} photo(s).`, 'success');
+    download(docxBlob, 'photos.docx');
+  } catch (err) {
+    setStatus('Error: ' + err.message, 'error');
+    console.error(err);
+  } finally {
+    generateBtn.disabled = false;
+    progressEl.classList.remove('visible');
+  }
+}
+
+// ─── Image compression via Canvas ────────────────────────────────────────────
+function compressImage(file, maxWidth, quality) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let w = img.naturalWidth, h = img.naturalHeight;
+      if (w > maxWidth) { h = Math.round(h * maxWidth / w); w = maxWidth; }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      canvas.toBlob(blob => {
+        if (!blob) { reject(new Error('Canvas toBlob failed for ' + file.name)); return; }
+        resolve({ blob, w, h });
+      }, 'image/jpeg', quality);
+    };
+    img.onerror = () => reject(new Error('Failed to load ' + file.name));
+    img.src = url;
+  });
+}
+
+// ─── DOCX builder ────────────────────────────────────────────────────────────
+async function buildDocx(images, columns, captionText) {
+  // Page width: Letter 8.5" - 1" margins each side = 6.5" = 5943600 EMU
+  // For n columns: subtract column gap * (n-1)
+  const PAGE_WIDTH_EMU = 5943600;
+  const GAP_EMU        = 228600; // 0.25" gap between columns
+  const colWidth       = Math.floor((PAGE_WIDTH_EMU - GAP_EMU * (columns - 1)) / columns);
+
+  const relationships = [];
+  const mediaFiles    = [];
+
+  // Load each image blob as ArrayBuffer
+  for (let i = 0; i < images.length; i++) {
+    const ab = await images[i].blob.arrayBuffer();
+    mediaFiles.push({ name: `image${i + 1}.jpg`, data: new Uint8Array(ab) });
+    relationships.push({
+      id:     `rId${i + 1}`,
+      target: `media/image${i + 1}.jpg`,
+    });
+  }
+
+  // Build document body paragraphs
+  let bodyXml = '';
+
+  // Lay out rows of `columns` images
+  for (let row = 0; row < images.length; row += columns) {
+    const rowImages = images.slice(row, row + columns);
+
+    if (columns === 1) {
+      // Single column: one image per paragraph, caption below
+      const img = rowImages[0];
+      const idx = row;
+      const emuH = Math.round(colWidth * img.h / img.w);
+      bodyXml += imgParagraph(idx + 1, colWidth, emuH, img.name);
+      bodyXml += captionParagraph(captionText);
+    } else {
+      // Multi-column: images side by side in a table row
+      bodyXml += '<w:tbl>';
+      bodyXml += `<w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>
+        <w:top w:val="none"/><w:left w:val="none"/>
+        <w:bottom w:val="none"/><w:right w:val="none"/>
+        <w:insideH w:val="none"/><w:insideV w:val="none"/>
+      </w:tblBorders></w:tblPr>`;
+
+      // Image row
+      bodyXml += '<w:tr>';
+      for (let c = 0; c < columns; c++) {
+        const img = rowImages[c];
+        const idx = row + c;
+        bodyXml += `<w:tc><w:tcPr><w:tcW w:w="${Math.round(colWidth / 914)}" w:type="dxa"/></w:tcPr>`;
+        if (img) {
+          const emuH = Math.round(colWidth * img.h / img.w);
+          bodyXml += imgParagraph(idx + 1, colWidth, emuH, img.name);
+        } else {
+          bodyXml += '<w:p/>';
+        }
+        bodyXml += '</w:tc>';
+      }
+      bodyXml += '</w:tr>';
+
+      // Caption row
+      bodyXml += '<w:tr>';
+      for (let c = 0; c < columns; c++) {
+        bodyXml += `<w:tc><w:tcPr><w:tcW w:w="${Math.round(colWidth / 914)}" w:type="dxa"/></w:tcPr>`;
+        bodyXml += captionParagraph(captionText);
+        bodyXml += '</w:tc>';
+      }
+      bodyXml += '</w:tr>';
+
+      bodyXml += '</w:tbl>';
+    }
+
+    // Spacer paragraph between rows
+    bodyXml += '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr></w:p>';
+  }
+
+  function imgParagraph(rIdNum, cx, cy, altText) {
+    const safe = escXml(altText);
+    return `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r>
+      <w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+        <wp:extent cx="${cx}" cy="${cy}"/>
+        <wp:docPr id="${rIdNum}" name="${safe}"/>
+        <wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr>
+        <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+            <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+              <pic:nvPicPr>
+                <pic:cNvPr id="${rIdNum}" name="${safe}"/>
+                <pic:cNvPicPr><a:picLocks noChangeAspect="1" noChangeArrowheads="1"/></pic:cNvPicPr>
+              </pic:nvPicPr>
+              <pic:blipFill>
+                <a:blip r:embed="rId${rIdNum}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                <a:stretch><a:fillRect/></a:stretch>
+              </pic:blipFill>
+              <pic:spPr bwMode="auto">
+                <a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>
+                <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                <a:noFill/>
+              </pic:spPr>
+            </pic:pic>
+          </a:graphicData>
+        </a:graphic>
+      </wp:inline></w:drawing>
+    </w:r></w:p>`;
+  }
+
+  function captionParagraph(text) {
+    return `<w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:i/><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr></w:pPr>
+      <w:r><w:rPr><w:i/><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:t>${escXml(text)}</w:t></w:r></w:p>`;
+  }
+
+  // ── Assemble ZIP ──────────────────────────────────────────────────────────
+  const zip = new ZipWriter();
+
+  // [Content_Types].xml
+  let imageContentTypes = '';
+  for (let i = 0; i < images.length; i++) {
+    imageContentTypes += `<Override PartName="/word/media/image${i+1}.jpg" ContentType="image/jpeg"/>`;
+  }
+  zip.add('[Content_Types].xml', str2u8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  ${imageContentTypes}
+</Types>`));
+
+  // _rels/.rels
+  zip.add('_rels/.rels', str2u8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`));
+
+  // word/_rels/document.xml.rels
+  let relEntries = relationships.map(r =>
+    `<Relationship Id="${r.id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${r.target}"/>`
+  ).join('\n  ');
+  zip.add('word/_rels/document.xml.rels', str2u8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${relEntries}
+</Relationships>`));
+
+  // word/document.xml
+  zip.add('word/document.xml', str2u8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+  xmlns:v="urn:schemas-microsoft-com:vml"
+  xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+  xmlns:w10="urn:schemas-microsoft-com:office:word"
+  xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
+  xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+  xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk"
+  xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"
+  xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+  mc:Ignorable="w14 wp14">
+  <w:body>
+    <w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="709" w:footer="709" w:gutter="0"/>
+    </w:sectPr>
+    ${bodyXml}
+  </w:body>
+</w:document>`));
+
+  // word/media/image*.jpg
+  for (const mf of mediaFiles) {
+    zip.add(`word/media/${mf.name}`, mf.data);
+  }
+
+  return new Blob([zip.finalize()], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function escXml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function str2u8(s) {
+  return new TextEncoder().encode(s);
+}
+function download(blob, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+// ─── Minimal ZIP writer (Store method — no DEFLATE needed for JPEG) ───────────
+class ZipWriter {
+  constructor() {
+    this.files   = [];
+    this.central = [];
+    this.offset  = 0;
+  }
+
+  add(name, data) {
+    const nameBytes = new TextEncoder().encode(name);
+    const crc       = crc32(data);
+    const now       = dosDateTime();
+
+    // Local file header
+    const local = new Uint8Array(30 + nameBytes.length);
+    const dv    = new DataView(local.buffer);
+    dv.setUint32(0,  0x04034b50, true); // signature
+    dv.setUint16(4,  20,         true); // version needed
+    dv.setUint16(6,  0,          true); // flags
+    dv.setUint16(8,  0,          true); // compression: store
+    dv.setUint16(10, now.time,   true);
+    dv.setUint16(12, now.date,   true);
+    dv.setUint32(14, crc,        true);
+    dv.setUint32(18, data.length,true); // compressed size
+    dv.setUint32(22, data.length,true); // uncompressed size
+    dv.setUint16(26, nameBytes.length, true);
+    dv.setUint16(28, 0,          true); // extra length
+    local.set(nameBytes, 30);
+
+    this.files.push(local, data);
+
+    // Central directory entry
+    const cde = new Uint8Array(46 + nameBytes.length);
+    const cdv = new DataView(cde.buffer);
+    cdv.setUint32(0,  0x02014b50, true);
+    cdv.setUint16(4,  20,         true); // version made by
+    cdv.setUint16(6,  20,         true); // version needed
+    cdv.setUint16(8,  0,          true); // flags
+    cdv.setUint16(10, 0,          true); // compression
+    cdv.setUint16(12, now.time,   true);
+    cdv.setUint16(14, now.date,   true);
+    cdv.setUint32(16, crc,        true);
+    cdv.setUint32(20, data.length,true);
+    cdv.setUint32(24, data.length,true);
+    cdv.setUint16(28, nameBytes.length, true);
+    cdv.setUint16(30, 0,          true); // extra
+    cdv.setUint16(32, 0,          true); // comment
+    cdv.setUint16(34, 0,          true); // disk start
+    cdv.setUint16(36, 0,          true); // int attr
+    cdv.setUint32(38, 0,          true); // ext attr
+    cdv.setUint32(42, this.offset,true); // local header offset
+    cde.set(nameBytes, 46);
+
+    this.central.push(cde);
+    this.offset += local.length + data.length;
+  }
+
+  finalize() {
+    const centralSize = this.central.reduce((s, c) => s + c.length, 0);
+    const eocd = new Uint8Array(22);
+    const dv   = new DataView(eocd.buffer);
+    dv.setUint32(0,  0x06054b50,          true);
+    dv.setUint16(4,  0,                   true);
+    dv.setUint16(6,  0,                   true);
+    dv.setUint16(8,  this.central.length, true);
+    dv.setUint16(10, this.central.length, true);
+    dv.setUint32(12, centralSize,         true);
+    dv.setUint32(16, this.offset,         true);
+    dv.setUint16(20, 0,                   true);
+
+    const parts = [...this.files, ...this.central, eocd];
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    const out   = new Uint8Array(total);
+    let pos = 0;
+    for (const p of parts) { out.set(p, pos); pos += p.length; }
+    return out;
+  }
+}
+
+// CRC-32 table
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c;
+  }
+  return t;
+})();
+
+function crc32(data) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function dosDateTime() {
+  const d = new Date();
+  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  return { date, time };
+}
+</script>
+</body>
+</html>
