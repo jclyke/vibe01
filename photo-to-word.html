@@ -135,16 +135,15 @@
         <input type="number" id="maxWidth" value="1200" min="200" max="4000" step="100">
       </label>
     </div>
-    <div class="row">
-      <label class="opt">
-        <span>Columns per row</span>
-        <input type="number" id="columns" value="1" min="1" max="4">
-      </label>
-      <label class="opt">
-        <span>Caption placeholder</span>
-        <input type="text" id="caption" value="[Caption here]">
-      </label>
-    </div>
+    <label class="opt">
+      <span>Picture width &nbsp;<strong id="widthLabel">100% &nbsp;(1 per row)</strong></span>
+      <input type="range" id="picWidth" min="20" max="100" value="100" step="5"
+             oninput="updateWidthLabel()">
+    </label>
+    <label class="opt">
+      <span>Caption placeholder</span>
+      <input type="text" id="caption" value="[Caption here]">
+    </label>
     <label class="opt">
       <span>Sort order</span>
       <select id="sortOrder" style="background:#0f0f23;border:1px solid #2d2d5e;border-radius:6px;color:#e0e0e0;padding:6px 10px;font-size:0.9rem;">
@@ -188,6 +187,13 @@ dropZone.addEventListener('drop', e => {
 });
 folderInput.addEventListener('change', () => handleFiles([...folderInput.files]));
 generateBtn.addEventListener('click', generate);
+
+function updateWidthLabel() {
+  const pct = parseInt(document.getElementById('picWidth').value);
+  const cols = Math.floor(100 / pct);
+  document.getElementById('widthLabel').textContent =
+    `${pct}%  (${cols} per row)`;
+}
 
 function handleFiles(files) {
   const imageTypes = /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i;
@@ -244,7 +250,8 @@ async function generate() {
 
   const quality  = parseInt(document.getElementById('quality').value) / 100;
   const maxWidth = parseInt(document.getElementById('maxWidth').value) || 1200;
-  const columns  = Math.max(1, Math.min(4, parseInt(document.getElementById('columns').value) || 1));
+  const picWidthPct = parseInt(document.getElementById('picWidth').value) || 100;
+  const columns  = Math.max(1, Math.floor(100 / picWidthPct));
   const caption  = document.getElementById('caption').value || '[Caption here]';
   const files    = sortFiles([...selectedFiles]);
 
@@ -269,7 +276,7 @@ async function generate() {
 
     setStatus('Building document…', '');
     progressEl.value = 70;
-    const docxBlob = await buildDocx(images, columns, caption);
+    const docxBlob = await buildDocx(images, columns, caption, picWidthPct);
 
     progressEl.value = 100;
     const skipNote = skipped.length ? ` (${skipped.length} skipped)` : '';
@@ -323,12 +330,12 @@ async function compressImage(file, maxWidth, quality) {
 }
 
 // ─── DOCX builder ────────────────────────────────────────────────────────────
-async function buildDocx(images, columns, captionText) {
+async function buildDocx(images, columns, captionText, picWidthPct) {
   // Page width: Letter 8.5" - 1" margins each side = 6.5" = 5943600 EMU
-  // For n columns: subtract column gap * (n-1)
   const PAGE_WIDTH_EMU = 5943600;
   const GAP_EMU        = 228600; // 0.25" gap between columns
-  const colWidth       = Math.floor((PAGE_WIDTH_EMU - GAP_EMU * (columns - 1)) / columns);
+  // Picture width is driven by the slider percentage, not just page / columns
+  const colWidth       = Math.floor(PAGE_WIDTH_EMU * picWidthPct / 100);
 
   const relationships = [];
   const mediaFiles    = [];
